@@ -35,8 +35,8 @@ jobs:
       env:
         # Store sensitive information as encrypted GitHub Secrets
         API_KEY: ${{ secrets.API_KEY }}
-        SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
-        SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+        GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
+        GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
         RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
       run: |
         python sensor.py
