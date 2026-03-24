@@ -2,6 +2,7 @@ import os
 import json
 import requests
 from datetime import datetime, timedelta, timezone
+from collections import defaultdict
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
