@@ -34,7 +34,6 @@ IO_TEMP      = 'io10800'  # primary temp:     value / 100 = °C
 IO_TEMP2     = 'io25'     # fallback temp:    value / 100 = °C
 IO_HUMIDITY  = 'io10804'  # primary humidity: raw = %RH
 IO_HUMIDITY2 = 'io86'     # fallback humidity: raw = %RH
-# IO_DOOR    = 'io10808'  # door sensor (disabled)
 
 # ── Colours / styles ───────────────────────────────────────────────────────────
 FONT_NAME   = "Arial"
@@ -65,6 +64,46 @@ def _align(h="left", v="center", wrap=False):
 
 def sanitize_filename(name):
     return _re.sub(r'[\\/*?:"<>|]', '_', name).strip() or 'unknown'
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  10-MINUTE RESAMPLING  (for bottom data table only)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def resample_10min(temp_data, humidity_data):
+    """
+    Bucket raw readings into 10-minute windows.
+    Each bucket is labelled by its window start (floor to 10 min).
+    Returns a list of dicts: {timestamp, temperature, humidity}
+    temperature and humidity are averages of all readings in that window.
+    """
+    temp_buckets = defaultdict(list)
+    hum_buckets  = defaultdict(list)
+
+    for r in temp_data:
+        ts = r['timestamp']
+        # floor to nearest 10-minute mark
+        bucket = ts.replace(minute=(ts.minute // 10) * 10, second=0, microsecond=0)
+        temp_buckets[bucket].append(r['temperature'])
+
+    for r in humidity_data:
+        ts = r['timestamp']
+        bucket = ts.replace(minute=(ts.minute // 10) * 10, second=0, microsecond=0)
+        hum_buckets[bucket].append(r['humidity'])
+
+    all_buckets = sorted(set(temp_buckets) | set(hum_buckets))
+
+    result = []
+    for bucket in all_buckets:
+        temps = temp_buckets.get(bucket)
+        hums  = hum_buckets.get(bucket)
+        result.append({
+            'timestamp':   bucket,
+            'temperature': sum(temps) / len(temps) if temps else None,
+            'humidity':    sum(hums)  / len(hums)  if hums  else None,
+        })
+
+    return result
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -120,19 +159,19 @@ def parse_api_response(json_data, plate_number):
         d         = ts.date()
         in_window = (d in daily_first and daily_first[d] <= ts <= daily_last[d])
 
-        # Temperature: use primary key (io10800), fall back to secondary (io25)
+        # Temperature
         temp_key = IO_TEMP if IO_TEMP in io else (IO_TEMP2 if IO_TEMP2 in io else None)
         if temp_key:
             raw = float(io[temp_key])
             if raw == 250:
-                temp = last_valid_temp      # sensor error → carry forward
+                temp = last_valid_temp
             else:
                 temp = raw / 100.0
                 last_valid_temp = temp
             if temp is not None and in_window:
                 storage_temp.append({'timestamp': ts, 'temperature': temp})
 
-        # Humidity: use primary key (io10804), fall back to secondary (io86)
+        # Humidity
         hum_key = IO_HUMIDITY if IO_HUMIDITY in io else (IO_HUMIDITY2 if IO_HUMIDITY2 in io else None)
         if hum_key:
             raw = float(io[hum_key])
@@ -141,11 +180,6 @@ def parse_api_response(json_data, plate_number):
                 last_valid_hum = raw
             if hum is not None and in_window:
                 humidity.append({'timestamp': ts, 'humidity': hum})
-
-        # Door sensor disabled
-        # if IO_DOOR in io:
-        #     state = 1 if float(io[IO_DOOR]) == 250 else 0
-        #     door.append({'timestamp': ts, 'state': state})
 
     print(f"  {plate_number}: temp={len(storage_temp)}pts  "
           f"hum={len(humidity)}pts  door={len(door)}pts  "
@@ -274,12 +308,15 @@ def build_plate_sheet(wb, plate_number, analysis):
         ws['A1'] = f"Тухайн өдөр ямар ч хөдөлгөөн хийгээгүй байна {plate_number}"
         return
 
-    humidity_dict = {r['timestamp']: r['humidity'] for r in humidity_data}
+    # ── Build 10-minute resampled data for the bottom table ───────────────────
+    table_data = resample_10min(temp_data, humidity_data)
 
     # ── Chart data on hidden sheet ─────────────────────────────────────────────
     ds_name = f"_d_{safe_name}"[:31]
     ds = wb.create_sheet(title=ds_name)
     ds.sheet_state = 'hidden'
+
+    humidity_dict = {r['timestamp']: r['humidity'] for r in humidity_data}
 
     step    = max(1, len(temp_data) // 500)
     sampled = temp_data[::step]
@@ -469,9 +506,10 @@ def build_plate_sheet(wb, plate_number, analysis):
 
         _spacer(ws, row); row += 1
 
-    # ── Temperature & Humidity data table ─────────────────────────────────────
+    # ── Temperature & Humidity data table (10-min averages) ───────────────────
     _section_header(ws, row, 1,
-                    "🌡️  Температур & Чийгшил өгөгдөл (Temperature & Humidity Data)",
+                    "🌡️  Температур & Чийгшил өгөгдөл — 10 мин дундаж "
+                    "(Temperature & Humidity Data — 10 min avg)",
                     12)
     row += 1
 
@@ -484,7 +522,7 @@ def build_plate_sheet(wb, plate_number, analysis):
                         bg=C_SUBHDR_BG, fg=C_SUBHDR_FG, halign="center")
     row += 1
 
-    total       = len(temp_data)
+    total       = len(table_data)
     rows_needed = max(1, (total + 2) // 3)
 
     for i in range(rows_needed):
@@ -498,24 +536,31 @@ def build_plate_sheet(wb, plate_number, analysis):
                     c.border = _border(); c.fill = _fill(empty_bg)
                 continue
 
-            reading = temp_data[data_idx]
-            t       = reading['temperature']
-            hv      = humidity_dict.get(reading['timestamp'])
-            is_oor  = (t <= -9 or t >= 15)
-            row_bg  = C_RED_BG if is_oor else (C_ALT_ROW if alt else "FFFFFF")
-            t_fg    = C_RED_FG if is_oor else "000000"
+            reading = table_data[data_idx]
+            t  = reading['temperature']
+            hv = reading['humidity']
 
+            # out-of-range check (only if temp exists)
+            is_oor = (t is not None) and (t <= -9 or t >= 15)
+            row_bg = C_RED_BG if is_oor else (C_ALT_ROW if alt else "FFFFFF")
+            t_fg   = C_RED_FG if is_oor else "000000"
+
+            # Timestamp cell — shows bucket start time (HH:MM, no seconds)
             ts_c = ws.cell(row=row, column=cs[0],
-                           value=reading['timestamp'].strftime('%m/%d %H:%M:%S'))
+                           value=reading['timestamp'].strftime('%m/%d %H:%M'))
             ts_c.font = _font(size=8); ts_c.alignment = _align(h="center")
             ts_c.border = _border(); ts_c.fill = _fill(row_bg)
 
-            t_c = ws.cell(row=row, column=cs[1], value=round(t, 1))
+            # Temperature cell
+            t_val = round(t, 1) if t is not None else "-"
+            t_c = ws.cell(row=row, column=cs[1], value=t_val)
             t_c.font = _font(size=8, color=t_fg, bold=is_oor)
             t_c.alignment = _align(h="center"); t_c.border = _border()
             t_c.fill = _fill(C_RED_BG if is_oor else row_bg)
-            t_c.number_format = '0.0'
+            if isinstance(t_val, float):
+                t_c.number_format = '0.0'
 
+            # Humidity cell
             h_val = round(hv, 1) if hv is not None else "-"
             h_c   = ws.cell(row=row, column=cs[2], value=h_val)
             h_c.font = _font(size=8); h_c.alignment = _align(h="center")
@@ -527,7 +572,7 @@ def build_plate_sheet(wb, plate_number, analysis):
 
     _spacer(ws, row); row += 1
 
-    # ── Out-of-range table ─────────────────────────────────────────────────────
+    # ── Out-of-range table (still uses raw data for full accuracy) ─────────────
     oor = [r for r in temp_data if r['temperature'] <= -9 or r['temperature'] >= 15]
     if oor:
         _section_header(ws, row, 1,
@@ -540,6 +585,7 @@ def build_plate_sheet(wb, plate_number, analysis):
                             bg="FF4444", fg="FFFFFF", halign="center")
         row += 1
 
+        humidity_dict_raw = {r['timestamp']: r['humidity'] for r in humidity_data}
         oor_rows = max(1, (len(oor) + 2) // 3)
         for i in range(oor_rows):
             alt = (i % 2 == 1)
@@ -553,7 +599,7 @@ def build_plate_sheet(wb, plate_number, analysis):
                     continue
                 reading = oor[data_idx]
                 t  = reading['temperature']
-                hv = humidity_dict.get(reading['timestamp'])
+                hv = humidity_dict_raw.get(reading['timestamp'])
 
                 ts_c = ws.cell(row=row, column=cs[0],
                                value=reading['timestamp'].strftime('%m/%d %H:%M:%S'))
@@ -671,20 +717,17 @@ def send_email_with_attachment(sender_email, sender_password, receiver_emails,
         print(f"Error sending email: {e}"); return False
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MAIN
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def main():
-    # Date range: last full week (Mon 00:00 → Sun 23:59 local +8)
-    # We subtract 8h when sending to the API so it queries the correct UTC window.
-    today = datetime.now()
-    # Last Monday = today minus (weekday + 7) days, floored to midnight
-    Yesterday = (today - timedelta(days= 1)).replace(
-        hour=0, minute=0, second=0, microsecond=0)
-    Tooday = (today).replace(
-        hour=0, minute=0, second=0, microsecond=0)
+    today     = datetime.now()
+    Yesterday = (today - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    Tooday    = today.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    # Shift -8h for the API query (API expects UTC, data is stored as +8 local)
     start_date = Yesterday - timedelta(hours=8)
-    end_date   = Tooday - timedelta(hours=8)
+    end_date   = Tooday    - timedelta(hours=8)
 
     start_str = start_date.strftime('%Y-%m-%d %H:%M')
     end_str   = end_date.strftime('%Y-%m-%d %H:%M')
@@ -709,7 +752,6 @@ def main():
     if not plate_analyses:
         print("No data fetched for any vehicle."); return
 
-    # Build Excel report
     os.makedirs('reports', exist_ok=True)
     output_file = 'reports/sensor_report.xlsx'
 
