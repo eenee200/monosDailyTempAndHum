@@ -542,7 +542,7 @@ def build_plate_sheet(wb, plate_number, analysis):
             hv = reading['humidity']
 
             # out-of-range check (only if temp exists)
-            is_oor = (t is not None) and (t <= -9 or t >= 15)
+            is_oor = (t is not None) and (t <= 15 or t >= 25)
             row_bg = C_RED_BG if is_oor else (C_ALT_ROW if alt else "FFFFFF")
             t_fg   = C_RED_FG if is_oor else "000000"
 
@@ -574,7 +574,7 @@ def build_plate_sheet(wb, plate_number, analysis):
     _spacer(ws, row); row += 1
 
     # ── Out-of-range table (still uses raw data for full accuracy) ─────────────
-    oor = [r for r in temp_data if r['temperature'] <= -9 or r['temperature'] >= 15]
+    oor = [r for r in temp_data if r['temperature'] <= 15 or r['temperature'] >= 25]
     if oor:
         _section_header(ws, row, 1,
                         "⚠️  Хязгаараас гарсан температур (Out-of-Range)", 12,
