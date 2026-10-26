@@ -2,41 +2,35 @@ name: Daily GPS Sensor Report
 
 on:
   schedule:
-    - cron: '0 0 * * *'   # 00:00 UTC+8 = 16:00 UTC previous day
+    - cron: '0 16 * * *'   # 16:00 UTC = 00:00 UTC+8
   push:
-    branches: 
+    branches:
       - main
       - master
 
 jobs:
   generate-report:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
-    
+      uses: actions/checkout@v4
+
     - name: Set up Python
-      uses: actions/setup-python@v3
+      uses: actions/setup-python@v5
       with:
-        python-version: '3.9'
-    
+        python-version: '3.12'
+        cache: 'pip'
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-    
-    - name: Configure Git credentials
-      run: |
-        git config --global user.name 'GitHub Actions Bot'
-        git config --global user.email 'actions@github.com'
-    
+
     - name: Run GPS Sensor Report Script
       env:
-        # Store sensitive information as encrypted GitHub Secrets
         API_KEY: ${{ secrets.API_KEY }}
         GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
         GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
         RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
-      run: |
-        python sensor.py
+      run: python sensor.py
